@@ -7,6 +7,27 @@
 
 ---
 
+## v3.4.2 (2026-05-11 · Windows + Clash Schannel TLS 兼容 · baostock 双 fallback)
+
+### BUG · Windows Python + Schannel TLS 与东财不兼容 · PE/PB/ROE 全空
+- **症状**：Windows + Clash 用户跑分析 · 所有 eastmoney 链路（xueqiu / push2 / baidu / tencent_qt）全挂 · 报告里 PE/PB/ROE 全 `—`
+- **位置**：`lib/data_sources.fetch_basic` 链 + `fetch_financials.py::_fetch_a_share`
+- **根因**：Windows Python 默认用 Schannel（系统 TLS）· 东财接口与 Schannel 兼容性差. Clash 国内规则 DIRECT → 仍走 Schannel · 代理救不了
+- **不能修的事**：Schannel 本身没法修（需要换 Python TLS backend 或改 Clash 规则让 eastmoney 走代理）
+- **能修的事**：增加 baostock fallback · 它走自有协议（非 HTTPS）· 完全绕过 SSL 兼容性
+- **修法**（2 处 fallback）：
+  1. `fetch_basic` · 在 tencent_qt 之后追加 baostock · `query_history_k_data_plus` 拿 peTTM/pbMRQ/close · `query_stock_basic` 拿 code_name/ipoDate
+  2. `fetch_financials._fetch_a_share` · 当 ROE/revenue_history/net_margin 都空时触发 baostock · 拉 5 年季报 + 解析 roeAvg/MBRevenue/npMargin/gpMargin
+- **验证**：baostock 茅台 sh.600519 实测拿到 peTTM=20.4 / pbMRQ=7.15 / ROE=19.25% / 净利率 52.6% / 营收 893.5 亿
+- **回归测试**：`tests/test_v3_4_2_baostock_fallback.py` (6 tests · 含真机烟雾测试)
+- **未来改该区域注意事项**：
+  - **不要在 baostock fallback 段直接覆盖正常数据**：fetch_financials 检查 `needs_fallback = not roe and not revenue_history and not net_margin` · 仅当核心字段全空才触发 · 否则会让正常拿到数据的票被 baostock 覆盖（baostock 季报较慢 · 可能不是最新）
+  - baostock `query_profit_data` 返回 ROE/Margin 都是**小数**（0.19 = 19%）· 渲染前必须 ×100
+  - 不要把 baostock 当主源 · 它季度数据更新比 akshare 慢 1-3 天 · 仅当主源失败时启用
+  - baostock 服务端要求 ≥0.9.1（v3.4.0 已锁版本）
+
+---
+
 ## v3.4.1 (2026-05-11 · verdict 粒度细化 · 相近股票可区分)
 
 ### BUG · 50-65 verdict 段过宽 · 神剑(58) + 博云(59.9) 都判 "观望优先" 看不出差异

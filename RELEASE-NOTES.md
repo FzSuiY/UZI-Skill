@@ -1,5 +1,87 @@
 # Release Notes
 
+## v3.4.2 — 2026-05-11 (Windows + Clash Schannel TLS 兼容 · baostock 双 fallback)
+
+> **社群反馈** (Windows + Clash 用户)：
+> "Clash 里国内网站默认直连，所以代理帮不上东方财富的忙. 直连东方财富 Schannel TLS 不兼容 ❌ · 经代理（DIRECT 规则）还是 Schannel ❌ · baostock 完全绕过 ✅ · 缺 PE/PB 数据 · 可以多个数据源采集数据？"
+
+### 诊断
+
+Windows Python 默认用 **Schannel**（Windows 自带 TLS 实现 · 非 OpenSSL）· 东方财富 push2/em 接口对 Schannel 兼容性差 · 即使配 Clash 代理也救不了（Clash 国内规则默认 DIRECT → 还是走 Schannel）.
+
+但 **baostock 自有协议**（非 HTTPS · 走 137.175.x 服务端）· 完全绕过 SSL 兼容性问题. v2.x 已经有 baostock provider 用于 K 线 fallback · 但 PE/PB/ROE 这些**核心指标字段**没接 baostock · 这次补上.
+
+### 两处新增 baostock fallback
+
+#### 1. `lib/data_sources.fetch_basic` · PE/PB/price/name
+
+在所有 akshare 路径（xueqiu / push2 / baidu / tencent_qt）失败后追加 baostock 兜底：
+
+```python
+# 优先级链
+1. xueqiu (eastmoney 后端)     ← Schannel 受限时挂
+2. push2 (eastmoney 直连)      ← Schannel 受限时挂
+3. baidu_mcap                  ← Schannel 受限时挂
+4. tencent_qt                  ← 通常 ok
+5. baostock ✨ NEW             ← 永远可用（自有协议）
+```
+
+baostock 拿：
+- `query_history_k_data_plus` 字段 `peTTM / pbMRQ / psTTM / close` → PE/PB/PS/价格
+- `query_stock_basic` → `code_name / ipoDate` → 股票名/上市日
+
+#### 2. `fetch_financials._fetch_a_share` · ROE/营收/净利率/毛利率
+
+当 akshare `stock_financial_abstract / stock_financial_analysis_indicator` 全挂时（`needs_fallback = not roe and not revenue_history and not net_margin`）· 自动调 baostock：
+
+- `query_profit_data` 拉 5 年 × 4 季度报表
+- 提取 `roeAvg → ROE history` · `MBRevenue → revenue_history` · `npMargin → net_margin` · `gpMargin → gross_margin`
+
+仅在 akshare 数据为空时触发 · 不覆盖正常数据.
+
+### 实测验证
+
+```
+$ baostock 茅台 2025Q2 query_profit_data
+  2025-06-30: ROE=19.25% 净利率=52.6% 营收=893.5亿
+```
+
+PE/PB 也实测：sh.600519 拿到 peTTM=20.4, pbMRQ=7.15.
+
+### 回归测试
+
+新增 `tests/test_v3_4_2_baostock_fallback.py` (6 tests):
+- fetch_basic 含 baostock fallback 字段
+- fetch_financials 含 baostock fallback + 仅 needs_fallback 时触发（不覆盖正常数据）
+- baostock provider 注册表存在 + 0 key + A 市场
+- 真机烟雾测试 query_profit_data
+- baostock_provider.py 不动 · 仅在 data_sources / fetch_financials 加 fallback 段
+
+**总套件 374 tests passed**（368 + 6 新）.
+
+### Windows 用户体验
+
+- Clash 默认配置（国内 DIRECT）下 · 跑分析仍能拿到 **PE/PB/ROE/营收/毛利率** 等核心字段 · 报告完整度从"只有技术分析"→ "技术 + 基本面"
+- 完全不需要改 Clash 规则
+- 不需要装 Schannel 补丁
+
+### 致谢
+
+社群 Windows 用户详细的 Schannel TLS 兼容性分析（直连 vs DIRECT vs baostock 对比表）· 让我们直接定位到 baostock 是唯一 viable fallback · 不用尝试其他 SSL workaround.
+
+### 升级
+
+```bash
+# Hermes
+hermes skills update wbh604/UZI-Skill/skills/deep-analysis
+
+# CLI 直用
+cd UZI-Skill && git pull
+pip install --upgrade baostock -i https://pypi.org/simple  # v3.4.0 起锁 ≥0.9.1
+```
+
+---
+
 ## v3.4.1 — 2026-05-11 (verdict 粒度细化 · 相近基本面股票可区分)
 
 > **用户反馈**："神剑股份、博云新材 这两支其实买入逻辑也不一样，只是差别没那么大 有人反馈试了一下这两个票，评分一致，是不是有什么问题？"

@@ -467,6 +467,51 @@ def _fetch_basic_a(ti: TickerInfo) -> dict:
             out["name"] = out.get("name") or qt.get("name")
             out["_fallback_snap"] = (out.get("_fallback_snap", "") + "+tencent_qt").lstrip("+")
 
+    # v3.4.2 · Windows + Clash + Schannel TLS 兜底 · baostock 完全绕过 SSL 兼容性问题
+    # 群友反馈：东方财富 Schannel TLS 不兼容 / 即使走 DIRECT 也还是 Schannel ·
+    # 但 baostock 走自有协议 · 完全不受影响 · 是 Windows Clash 用户的关键 fallback.
+    # 拉数据：close → price · peTTM → pe_ttm · pbMRQ → pb · code_name → name
+    if not out.get("pe_ttm") or not out.get("pb"):
+        try:
+            from .providers import baostock_provider as _bs_mod
+            bs_p = _bs_mod._BaostockProvider()
+            if bs_p.is_available():
+                bs_p._ensure_login()
+                bs_code = bs_p._bs_code(ti.code)
+                from datetime import datetime, timedelta
+                # 取最近 10 个交易日 · 拿最后一条
+                start_dt = (datetime.now() - timedelta(days=14)).strftime("%Y-%m-%d")
+                rs = bs_p.__class__._BS_MODULE_REF if False else None  # placeholder
+                import baostock as _bs
+                rs = _bs.query_history_k_data_plus(
+                    bs_code,
+                    "date,close,peTTM,pbMRQ,psTTM",
+                    start_date=start_dt,
+                    frequency="d", adjustflag="2",
+                )
+                rows = []
+                while rs.error_code == "0" and rs.next():
+                    rows.append(rs.get_row_data())
+                if rows:
+                    last = rows[-1]
+                    out["price"] = out.get("price") or float(last[1])
+                    out["pe_ttm"] = out.get("pe_ttm") or (round(float(last[2]), 2) if last[2] not in (None, "") else None)
+                    out["pb"] = out.get("pb") or (round(float(last[3]), 2) if last[3] not in (None, "") else None)
+                    if last[4] not in (None, ""):
+                        out["ps_ttm"] = out.get("ps_ttm") or round(float(last[4]), 2)
+                    # 拉股票名（如果之前都没拿到）
+                    if not out.get("name"):
+                        rs2 = _bs.query_stock_basic(code=bs_code)
+                        info = []
+                        while rs2.error_code == "0" and rs2.next():
+                            info.append(rs2.get_row_data())
+                        if info:
+                            out["name"] = info[0][1]
+                            out["listed_date"] = out.get("listed_date") or info[0][2]
+                    out["_fallback_snap"] = (out.get("_fallback_snap", "") + "+baostock").lstrip("+")
+        except Exception as e:
+            out["_baostock_err"] = f"{type(e).__name__}: {str(e)[:80]}"
+
     return out
 
 
